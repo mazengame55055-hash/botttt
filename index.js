@@ -306,12 +306,11 @@ client.on('messageCreate', async (message) => {
 
         if (message.content === '!txt') {
             const channels = await fetchChannels();
-            if (!channels || Object.keys(channels).length === 0) return reply(message, '❌ لا توجد قنوات.');
+            if (!channels || Object.keys(channels).length === 0) return;
             const lines = Object.entries(channels).map(([num, ch]) => `${num}. ${ch.name}`);
             const filePath = path.join(__dirname, 'channels.txt');
             fs.writeFileSync(filePath, lines.join('\n'), 'utf8');
-            await message.channel.send({ files: [filePath] });
-            await reply(message, `✅ تم تصدير ${lines.length} قناة إلى channels.txt`);
+            console.log(`✅ تم تصدير ${lines.length} قناة إلى ${filePath}`);
         }
 
         if (message.content === '!help') {
