@@ -41,13 +41,13 @@ const IPTV = {
 const M3U_URL = `${IPTV.host}:${IPTV.port}/get.php?username=${IPTV.user}&password=${IPTV.pass}&type=m3u_plus&output=ts`;
 
 const QUALITY_PRESETS = {
-    low: { width: 640, height: 360, fps: 15 },
-    medium: { width: 854, height: 480, fps: 20 },
-    high: { width: 1280, height: 720, fps: 25 },
-    hd: { width: 1920, height: 1080, fps: 30 },
+    low: { width: 640, height: 360, fps: 15, bitrate: '800k' },
+    medium: { width: 854, height: 480, fps: 20, bitrate: '1200k' },
+    high: { width: 1280, height: 720, fps: 30, bitrate: '1500k' },
+    hd: { width: 1920, height: 1080, fps: 30, bitrate: '4000k' },
 };
 
-let selectedQuality = QUALITY_PRESETS.hd;
+let selectedQuality = QUALITY_PRESETS.high;
 let currentChannelName = null;
 let abortController = null;
 let channelsCache = null;
@@ -218,28 +218,26 @@ client.on('messageCreate', async (message) => {
                     console.error('Could not change FFmpeg permissions:', e.message);
                 }
 
-                const { width, height, fps } = selectedQuality;
                 ffmpegProcess = spawn(ffmpegPath, [
                     '-reconnect', '1',
                     '-reconnect_streamed', '1',
                     '-reconnect_delay_max', '5',
                     '-analyzeduration', '500000',
                     '-probesize', '500000',
+                    '-thread_queue_size', '512',
                     '-i', channel.url,
-                    '-preset', 'medium',
                     '-c:v', 'libx264',
-                    '-pix_fmt', 'yuv420p',
-                    '-vf', `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`,
-                    '-b:v', '4000k',
-                    '-maxrate', '6000k',
-                    '-bufsize', '8000k',
-                    '-threads', '4',
+                    '-preset', 'ultrafast',
+                    '-tune', 'zerolatency',
+                    '-ar', '48000',
                     '-c:a', 'libopus',
-                    '-ac', '2',
-                    '-b:a', '128k',
-                    '-max_muxing_queue_size', '1024',
+                    '-b:a', '96k',
+                    '-s', '854x480',
+                    '-r', '24',
+                    '-maxrate', '800k',
+                    '-bufsize', '1600k',
+                    '-pix_fmt', 'yuv420p',
                     '-f', 'mpegts',
-                    '-mpegts_flags', '+resend_headers',
                     'pipe:1',
                 ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
@@ -271,9 +269,9 @@ client.on('messageCreate', async (message) => {
                 await playStream(ffmpegProcess.stdout, streamer, {
                     type: 'go-live',
                     format: 'mpegts',
-                    width: selectedQuality.width,
-                    height: selectedQuality.height,
-                    frameRate: selectedQuality.fps,
+                    width: 854,
+                    height: 480,
+                    frameRate: 24,
                 });
             } else {
                 console.log('FFmpeg not found, using direct mode');
@@ -281,9 +279,9 @@ client.on('messageCreate', async (message) => {
                 await playStream(input, streamer, {
                     type: 'go-live',
                     format: 'mpegts',
-                    width: selectedQuality.width,
-                    height: selectedQuality.height,
-                    frameRate: selectedQuality.fps,
+                    width: 854,
+                    height: 480,
+                    frameRate: 24,
                 });
             }
 
