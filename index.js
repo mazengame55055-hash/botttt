@@ -45,10 +45,9 @@ const IPTV = {
 const M3U_URL = `${IPTV.host}:${IPTV.port}/get.php?username=${IPTV.user}&password=${IPTV.pass}&type=m3u_plus&output=ts`;
 
 const QUALITY_PRESETS = {
-    low: { width: 640, height: 360, fps: 15, bitrate: '800k' },
-    medium: { width: 854, height: 480, fps: 20, bitrate: '1200k' },
-    high: { width: 1280, height: 720, fps: 30, bitrate: '1500k' },
-    hd: { width: 1920, height: 1080, fps: 30, bitrate: '4000k' },
+    low: { width: 640, height: 480, fps: 25, bitrate: '1500k', maxrate: '1500k', bufsize: '3000k' },
+    medium: { width: 960, height: 540, fps: 25, bitrate: '2000k', maxrate: '2000k', bufsize: '4000k' },
+    high: { width: 1280, height: 720, fps: 30, bitrate: '2500k', maxrate: '2500k', bufsize: '5000k' },
 };
 
 let selectedQuality = QUALITY_PRESETS.high;
@@ -222,6 +221,7 @@ client.on('messageCreate', async (message) => {
                     console.error('Could not change FFmpeg permissions:', e.message);
                 }
 
+                const { width, height, fps, bitrate, maxrate, bufsize } = selectedQuality;
                 ffmpegProcess = spawn(ffmpegPath, [
                     '-headers', 'User-Agent: VLC/3.0.20 LibVLC/3.0.20\r\n',
                     '-timeout', '30000000',
@@ -242,10 +242,10 @@ client.on('messageCreate', async (message) => {
                     '-ar', '48000',
                     '-c:a', 'libopus',
                     '-b:a', '96k',
-                    '-s', '1280x720',
-                    '-r', '30',
-                    '-maxrate', '2500k',
-                    '-bufsize', '5000k',
+                    '-s', `${width}x${height}`,
+                    '-r', String(fps),
+                    '-maxrate', maxrate,
+                    '-bufsize', bufsize,
                     '-pix_fmt', 'yuv420p',
                     '-f', 'mpegts',
                     'pipe:1',
@@ -276,22 +276,22 @@ client.on('messageCreate', async (message) => {
                     }
                 });
 
-            await playStream(ffmpegProcess.stdout, streamer, {
-                type: 'go-live',
-                format: 'mpegts',
-                width: 1280,
-                height: 720,
-                frameRate: 30,
-            });
+                await playStream(ffmpegProcess.stdout, streamer, {
+                    type: 'go-live',
+                    format: 'mpegts',
+                    width: selectedQuality.width,
+                    height: selectedQuality.height,
+                    frameRate: selectedQuality.fps,
+                });
             } else {
                 console.log('FFmpeg not found, using direct mode');
                 const input = Readable.fromWeb(response.body);
                 await playStream(input, streamer, {
                     type: 'go-live',
                     format: 'mpegts',
-                    width: 854,
-                    height: 480,
-                    frameRate: 24,
+                    width: selectedQuality.width,
+                    height: selectedQuality.height,
+                    frameRate: selectedQuality.fps,
                 });
             }
 
