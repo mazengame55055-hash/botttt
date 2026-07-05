@@ -45,6 +45,7 @@ const IPTV = {
 const M3U_URL = `${IPTV.host}:${IPTV.port}/get.php?username=${IPTV.user}&password=${IPTV.pass}&type=m3u_plus&output=ts`;
 
 const QUALITY_PRESETS = {
+    lowend: { width: 640, height: 360, fps: 20, bitrate: '500k', maxrate: '500k', bufsize: '1000k' },
     low: { width: 854, height: 480, fps: 24, bitrate: '800k', maxrate: '800k', bufsize: '1600k' },
     medium: { width: 960, height: 540, fps: 25, bitrate: '2000k', maxrate: '2000k', bufsize: '4000k' },
     high: { width: 1280, height: 720, fps: 30, bitrate: '2500k', maxrate: '2500k', bufsize: '5000k' },
@@ -166,7 +167,7 @@ client.on('messageCreate', async (message) => {
         if (message.content.startsWith('!quality ')) {
             const preset = message.content.split(' ')[1];
             if (!QUALITY_PRESETS[preset]) {
-                return reply(message, '❌ الخيارات: low, medium, high');
+                return reply(message, '❌ الخيارات: lowend, low, medium, high');
             }
             selectedQuality = QUALITY_PRESETS[preset];
             await reply(message, `✅ تم ضبط الجودة إلى **${preset}** (${selectedQuality.width}x${selectedQuality.height}, ${selectedQuality.fps}fps)`);
@@ -310,7 +311,7 @@ client.on('messageCreate', async (message) => {
                 '`!tv` - عرض قائمة القنوات',
                 '`!play <رقم>` - تشغيل قناة',
                 '`!stop` - إيقاف البث',
-                '`!quality <low|medium|high>` - ضبط الجودة',
+                '`!quality <lowend|low|medium|high>` - ضبط الجودة',
                 '`!status` - حالة البث',
                 '`!help` - المساعدة',
             ].join('\n');
