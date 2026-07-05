@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { PassThrough } = require('stream');
 
 // Auto-patch LibavDemuxer.js for Node v20 compatibility
 const libavPath = path.join(__dirname, 'node_modules', '@dank074', 'discord-video-stream', 'dist', 'media', 'LibavDemuxer.js');
@@ -226,6 +227,7 @@ client.on('messageCreate', async (message) => {
                 ffmpegProcess = spawn(ffmpegPath, [
                     '-headers', 'User-Agent: VLC/3.0.20 LibVLC/3.0.20\r\n',
                     '-timeout', '30000000',
+                    '-re',
                     '-reconnect', '1',
                     '-reconnect_streamed', '1',
                     '-reconnect_delay_max', '10',
@@ -277,7 +279,9 @@ client.on('messageCreate', async (message) => {
                     }
                 });
 
-                await playStream(ffmpegProcess.stdout, streamer, {
+                const bufferStream = new PassThrough({ highWaterMark: 1024 * 1024 * 16 });
+                ffmpegProcess.stdout.pipe(bufferStream);
+                await playStream(bufferStream, streamer, {
                     type: 'go-live',
                     format: 'mpegts',
                     width: selectedQuality.width,
