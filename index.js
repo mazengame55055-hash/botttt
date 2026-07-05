@@ -45,12 +45,12 @@ const IPTV = {
 const M3U_URL = `${IPTV.host}:${IPTV.port}/get.php?username=${IPTV.user}&password=${IPTV.pass}&type=m3u_plus&output=ts`;
 
 const QUALITY_PRESETS = {
-    low: { width: 640, height: 480, fps: 25, bitrate: '1500k', maxrate: '1500k', bufsize: '3000k' },
+    low: { width: 854, height: 480, fps: 24, bitrate: '800k', maxrate: '800k', bufsize: '1600k' },
     medium: { width: 960, height: 540, fps: 25, bitrate: '2000k', maxrate: '2000k', bufsize: '4000k' },
     high: { width: 1280, height: 720, fps: 30, bitrate: '2500k', maxrate: '2500k', bufsize: '5000k' },
 };
 
-let selectedQuality = QUALITY_PRESETS.high;
+let selectedQuality = QUALITY_PRESETS.medium;
 let currentChannelName = null;
 let abortController = null;
 let channelsCache = null;
