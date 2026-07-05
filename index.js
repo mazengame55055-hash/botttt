@@ -1,12 +1,11 @@
 const fs = require('fs');
 const path = require('path');
-const { PassThrough } = require('stream');
+const { spawn, execSync } = require('child_process');
 
 if (!global.WebSocket) {
   try { global.WebSocket = require('ws'); } catch (_) {}
 }
 
-// Auto-patch LibavDemuxer.js for Node v20 compatibility
 const libavPath = path.join(__dirname, 'node_modules', '@dank074', 'discord-video-stream', 'dist', 'media', 'LibavDemuxer.js');
 if (fs.existsSync(libavPath)) {
     let code = fs.readFileSync(libavPath, 'utf8');
@@ -23,7 +22,6 @@ if (fs.existsSync(libavPath)) {
 
 const { Client } = require('discord.js-selfbot-v13');
 const { Streamer, playStream } = require('@dank074/discord-video-stream');
-const { spawn, execSync } = require('child_process');
 
 const client = new Client({ intents: 33281 });
 const streamer = new Streamer(client);
@@ -45,13 +43,13 @@ const IPTV = {
 const M3U_URL = `${IPTV.ip}:${IPTV.port}/get.php?username=${IPTV.user}&password=${IPTV.pass}&type=m3u_plus&output=ts`;
 
 const QUALITY_PRESETS = {
-    lowend: { width: 640, height: 360, fps: 20, bitrate: '500k', maxrate: '500k', bufsize: '1000k' },
-    low: { width: 854, height: 480, fps: 24, bitrate: '800k', maxrate: '800k', bufsize: '1600k' },
-    medium: { width: 960, height: 540, fps: 25, bitrate: '2000k', maxrate: '2000k', bufsize: '4000k' },
-    high: { width: 1280, height: 720, fps: 30, bitrate: '2500k', maxrate: '2500k', bufsize: '5000k' },
+    lowend: { width: 640, height: 360, fps: 20, vb: '500k', maxrate: '500k', bufsize: '1000k' },
+    low: { width: 854, height: 480, fps: 24, vb: '800k', maxrate: '800k', bufsize: '1600k' },
+    medium: { width: 960, height: 540, fps: 25, vb: '2000k', maxrate: '2000k', bufsize: '4000k' },
+    high: { width: 1280, height: 720, fps: 30, vb: '2500k', maxrate: '2500k', bufsize: '5000k' },
 };
 
-let selectedQuality = QUALITY_PRESETS.medium;
+let selectedQuality = QUALITY_PRESETS.lowend;
 let currentChannelName = null;
 let channelsCache = null;
 let isPlaying = false;
@@ -62,24 +60,22 @@ function findFfmpeg() {
     for (const p of paths) { if (fs.existsSync(p)) return p; }
     try { const r = execSync('which ffmpeg', { encoding: 'utf8', timeout: 3000 }); if (r) return r.trim(); } catch (_) {}
     try { const r = execSync('where ffmpeg', { encoding: 'utf8', timeout: 3000 }); if (r) return r.trim().split('\n')[0]; } catch (_) {}
-    try { return require('ffmpeg-static'); } catch (_) { return null; }
+    return null;
 }
 const ffmpegPath = findFfmpeg();
 
-function parseM3U(m3uText) {
+function parseM3U(text) {
     const channels = {};
-    const lines = m3uText.split('\n');
-    let index = 1;
-    let currentName = null;
+    const lines = text.split('\n');
+    let idx = 1, name = null;
     for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('#EXTINF:')) {
-            const nameMatch = trimmed.match(/tvg-name="([^"]*)"/) || trimmed.match(/,([^,]+)$/);
-            if (nameMatch) { currentName = nameMatch[1].trim(); }
-        } else if (trimmed.startsWith('http') && currentName) {
-            const url = trimmed.replace('ugeen.live', '176.123.9.60');
-            channels[String(index)] = { name: currentName, url };
-            index++; currentName = null;
+        const t = line.trim();
+        if (t.startsWith('#EXTINF:')) {
+            const m = t.match(/tvg-name="([^"]*)"/) || t.match(/,([^,]+)$/);
+            if (m) name = m[1].trim();
+        } else if (t.startsWith('http') && name) {
+            channels[String(idx++)] = { name, url: t.replace('ugeen.live', '176.123.9.60') };
+            name = null;
         }
     }
     return channels;
@@ -88,28 +84,83 @@ function parseM3U(m3uText) {
 async function fetchChannels() {
     if (channelsCache) return channelsCache;
     const urls = [
-        M3U_URL,
-        M3U_URL.replace('&output=ts', ''),
+        M3U_URL, M3U_URL.replace('&output=ts', ''),
         `${IPTV.host}:${IPTV.port}/get.php?username=${IPTV.user}&password=${IPTV.pass}&type=m3u`,
     ];
     for (const url of urls) {
         try {
-            const response = await fetch(url, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+            const r = await fetch(url, {
+                headers: { 'User-Agent': 'Mozilla/5.0' },
                 signal: AbortSignal.timeout(10000),
             });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const text = await response.text();
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const text = await r.text();
             if (!text.startsWith('#EXTM3U')) throw new Error('Not M3U');
             channelsCache = parseM3U(text);
             console.log(`Fetched ${Object.keys(channelsCache).length} channels`);
             return channelsCache;
         } catch (e) {
-            console.error(`Failed: ${url.slice(0, 60)}... ${e.message}`);
+            console.error(`Fail: ${url.slice(0, 60)}... ${e.message}`);
         }
     }
-    if (channelsCache) return channelsCache;
     throw new Error('Failed to fetch channels');
+}
+
+async function playLoop(channel) {
+    const tmpDir = '/tmp/iptv';
+    fs.mkdirSync(tmpDir, { recursive: true });
+    let segNum = 0;
+
+    function produceSeg() {
+        const outFile = `${tmpDir}/seg_${++segNum}.ts`;
+        const q = selectedQuality;
+        const args = [
+            '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '10',
+            '-timeout', '30000000',
+            '-i', channel.url,
+            '-t', '60',
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+            '-pix_fmt', 'yuv420p', '-b:v', q.vb, '-maxrate', q.maxrate,
+            '-bufsize', q.bufsize, '-r', String(q.fps), '-vsync', 'cfr',
+            '-c:a', 'libopus', '-b:a', '48k', '-ac', '1',
+            '-f', 'mpegts', '-y', outFile,
+        ];
+        const proc = spawn(ffmpegPath, args);
+        ffmpegProcess = proc;
+        proc.stderr.on('data', () => {});
+        const p = new Promise((resolve, reject) => {
+            proc.on('exit', code => code === 0 ? resolve(outFile) : reject(new Error(`ffmpeg exit ${code}`)));
+            proc.on('error', reject);
+        });
+        return { file: outFile, promise: p, proc };
+    }
+
+    console.log(`Segment 1...`);
+    let current = produceSeg();
+    let currentFile;
+    try { currentFile = await current.promise; } catch (e) { if (!isPlaying) return; throw e; }
+    if (!isPlaying) return;
+
+    let next = produceSeg();
+
+    while (isPlaying) {
+        const fileStream = fs.createReadStream(currentFile);
+        await playStream(fileStream, streamer, {
+            type: 'go-live', format: 'mpegts',
+            width: selectedQuality.width, height: selectedQuality.height,
+            frameRate: selectedQuality.fps,
+        });
+        if (!isPlaying) break;
+
+        console.log('Waiting for next segment...');
+        let nextFile;
+        try { nextFile = await next.promise; } catch (e) { if (!isPlaying) break; throw e; }
+        if (!isPlaying) break;
+
+        try { fs.unlinkSync(currentFile); } catch (_) {}
+        currentFile = nextFile;
+        next = produceSeg();
+    }
 }
 
 client.on('ready', async () => {
@@ -117,107 +168,65 @@ client.on('ready', async () => {
     if (ffmpegPath) console.log(`FFmpeg: ${ffmpegPath}`);
     else console.log('FFmpeg NOT FOUND');
     try { await fetchChannels(); } catch (_) {}
-    const keepVoice = async () => {
+    const keep = async () => {
         try { await streamer.joinVoice(GUILD_ID, VOICE_ID).catch(() => {}); console.log('Voice OK'); } catch (_) {}
     };
-    await keepVoice();
-    setInterval(keepVoice, 300000);
+    await keep();
+    setInterval(keep, 300000);
 });
 
 async function runCommand(cmd, reply) {
-    const trim = cmd.startsWith('!') ? cmd : '!' + cmd;
+    const trim = cmd.startsWith('!') ? cmd.slice(1) : cmd;
     try {
-        if (trim === '!tv' || /^!tv \d+$/.test(trim)) {
-            const channels = await fetchChannels();
-            if (!channels || Object.keys(channels).length === 0) return reply('No channels.');
-            const page = trim === '!tv' ? 1 : parseInt(trim.split(' ')[1], 10);
-            const entries = Object.entries(channels);
+        if (trim === 'tv' || /^tv \d+$/.test(trim)) {
+            const ch = await fetchChannels();
+            if (!ch || !Object.keys(ch).length) return reply('No channels.');
+            const page = trim === 'tv' ? 1 : parseInt(trim.split(' ')[1], 10);
+            const entries = Object.entries(ch);
             const totalPages = Math.ceil(entries.length / 30);
             const p = Math.max(1, Math.min(page, totalPages));
-            const start = (p - 1) * 30;
-            const list = entries.slice(start, start + 30).map(([k, ch]) => `${k}. ${ch.name}`).join('\n');
+            const list = entries.slice((p - 1) * 30, p * 30).map(([k, v]) => `${k}. ${v.name}`).join('\n');
             return reply(`Page ${p}/${totalPages} (${entries.length} channels)\n${list}`);
         }
 
-        if (trim.startsWith('!quality ')) {
+        if (trim.startsWith('quality ')) {
             const preset = trim.split(' ')[1];
             if (!QUALITY_PRESETS[preset]) return reply('Options: lowend, low, medium, high');
             selectedQuality = QUALITY_PRESETS[preset];
             return reply(`Quality: ${preset} (${selectedQuality.width}x${selectedQuality.height}, ${selectedQuality.fps}fps)`);
         }
 
-        if (trim.startsWith('!play ')) {
+        if (trim.startsWith('play ')) {
             if (isPlaying) return reply('Already playing. Use !stop first.');
-            const channelKey = trim.split(' ')[1];
+            const key = trim.split(' ')[1];
             const channels = await fetchChannels();
             if (!channels) return reply('Failed to fetch channels.');
-            const channel = channels[channelKey];
-            if (!channel) return reply(`Channel ${channelKey} not found.`);
+            const channel = channels[key];
+            if (!channel) return reply(`Channel ${key} not found.`);
 
             currentChannelName = channel.name;
             isPlaying = true;
             reply(`Starting ${channel.name}...`);
 
             try { await streamer.joinVoice(GUILD_ID, VOICE_ID); } catch (_) {}
-            console.log(`Playing: ${channel.name}`);
 
-            if (ffmpegPath) {
-                const { width, height, fps, bitrate, maxrate, bufsize } = selectedQuality;
-                ffmpegProcess = spawn(ffmpegPath, [
-                    '-headers', 'User-Agent: VLC/3.0.20 LibVLC/3.0.20\r\n',
-                    '-timeout', '30000000',
-                    '-re',
-                    '-reconnect', '1',
-                    '-reconnect_streamed', '1',
-                    '-reconnect_delay_max', '10',
-                    '-analyzeduration', '2000000',
-                    '-probesize', '2000000',
-                    '-thread_queue_size', '512',
-                    '-i', channel.url,
-                    '-fflags', '+nobuffer+discardcorrupt',
-                    '-flags', '+low_delay',
-                    '-c:v', 'libx264',
-                    '-preset', 'ultrafast',
-                    '-tune', 'zerolatency',
-                    '-ar', '48000',
-                    '-c:a', 'libopus',
-                    '-b:a', '96k',
-                    '-s', `${width}x${height}`,
-                    '-r', String(fps),
-                    '-maxrate', maxrate,
-                    '-bufsize', bufsize,
-                    '-pix_fmt', 'yuv420p',
-                    '-f', 'mpegts',
-                    'pipe:1',
-                ], { stdio: ['pipe', 'pipe', 'pipe'] });
-
-                let ffmpegStderr = '';
-                ffmpegProcess.stderr.on('data', (chunk) => ffmpegStderr += chunk.toString());
-                ffmpegProcess.stdout.on('error', () => {});
-                ffmpegProcess.on('error', (err) => console.error('FFmpeg error:', err.message));
-                ffmpegProcess.on('exit', (code, signal) => {
-                    console.log(`FFmpeg exit (code=${code}, signal=${signal})`);
-                    if (code !== 0 && code !== null) {
-                        console.error(ffmpegStderr.split('\n').slice(-3).join('\n'));
-                    }
-                    ffmpegProcess = null;
-                });
-
-                const buf = new PassThrough({ highWaterMark: 1024 * 1024 * 16 });
-                ffmpegProcess.stdout.pipe(buf);
-                await playStream(buf, streamer, {
-                    type: 'go-live', format: 'mpegts',
-                    width: selectedQuality.width,
-                    height: selectedQuality.height,
-                    frameRate: selectedQuality.fps,
-                });
+            try {
+                await playLoop(channel);
+                reply(`Finished ${channel.name}.`);
+            } catch (err) {
+                if (err.name === 'AbortError') return;
+                console.error('playLoop error:', err.message);
+                reply(`Error: ${err.message}`);
             }
 
             isPlaying = false;
-            return reply(`Finished ${channel.name}.`);
+            if (ffmpegProcess) { try { ffmpegProcess.kill('SIGTERM'); } catch (_) {} ffmpegProcess = null; }
+            streamer.stopStream();
+            currentChannelName = null;
+            return;
         }
 
-        if (trim === '!stop') {
+        if (trim === 'stop') {
             const name = currentChannelName || '';
             if (ffmpegProcess) { try { ffmpegProcess.kill('SIGTERM'); } catch (_) {} ffmpegProcess = null; }
             streamer.stopStream();
@@ -226,32 +235,26 @@ async function runCommand(cmd, reply) {
             return reply(`Stopped ${name}.`);
         }
 
-        if (trim === '!txt') {
-            const channels = await fetchChannels();
-            if (!channels || Object.keys(channels).length === 0) return;
-            const lines = Object.entries(channels).map(([num, ch]) => `${num}. ${ch.name}`);
-            const fp = path.join(__dirname, 'channels.txt');
-            fs.writeFileSync(fp, lines.join('\n'), 'utf8');
+        if (trim === 'txt') {
+            const ch = await fetchChannels();
+            if (!ch) return;
+            const lines = Object.entries(ch).map(([k, v]) => `${k}. ${v.name}`);
+            fs.writeFileSync(path.join(__dirname, 'channels.txt'), lines.join('\n'), 'utf8');
             return reply(`Exported ${lines.length} channels.`);
         }
 
-        if (trim === '!status') {
+        if (trim === 'status') {
             return reply(
                 (isPlaying ? `Playing: ${currentChannelName || '?'}` : 'Stopped') +
                 `\n${selectedQuality.width}x${selectedQuality.height} @ ${selectedQuality.fps}fps`
             );
         }
 
-        if (trim === '!help') {
+        if (trim === 'help') {
             return reply([
-                'Commands:', '',
-                'play <num> - play channel',
-                'stop - stop stream',
-                'quality <lowend|low|medium|high>',
-                'tv - list channels',
-                'status - show status',
-                'txt - export channels.txt',
-                'help - this help',
+                'Commands:',
+                'play <num>', 'stop', 'quality <lowend|low|medium|high>',
+                'tv [page]', 'status', 'txt', 'help',
             ].join('\n'));
         }
     } catch (err) {
@@ -269,10 +272,11 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     if (message.channel.id !== VOICE_TEXT_ID) return;
     if (!OWNER_IDS.includes(message.author.id)) return;
-    let cmd = message.content;
-    if (cmd.startsWith('p ')) cmd = '!' + cmd.slice(2);
-    if (cmd.startsWith('p')) cmd = '!' + cmd.slice(1);
-    await runCommand(cmd, async (t) => {
+    let c = message.content;
+    if (c.startsWith('p ')) c = c.slice(2);
+    else if (c.startsWith('p')) c = c.slice(1);
+    if (/^\d+$/.test(c)) c = 'play ' + c;
+    await runCommand(c, async (t) => {
         try { await message.channel.send(t); } catch (e) { console.log('[send fail]', e.message); }
     });
 });
