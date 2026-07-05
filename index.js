@@ -143,71 +143,45 @@ client.on('ready', async () => {
     await fetchChannels();
 });
 
-client.on('messageCreate', async (message) => {
-    if (message.author.bot) return;
-    if (!OWNER_IDS.includes(message.author.id)) return;
-
+async function runCommand(cmd, tell) {
+    const trim = cmd.startsWith('!') ? cmd : '!' + cmd;
     try {
-        if (message.content === '!tv') {
+        if (trim === '!tv') {
             const channels = await fetchChannels();
-            if (!channels || Object.keys(channels).length === 0) {
-                return reply(message, '❌ لا توجد قنوات متاحة.');
+            if (!channels || Object.keys(channels).length === 0) return tell('❌ لا توجد قنوات.');
+            const entries = Object.entries(channels);
+            const pages = [];
+            for (let i = 0; i < entries.length; i += 50) {
+                pages.push(entries.slice(i, i + 50).map(([k, v]) => `${k}. ${v.name}`).join('\n'));
             }
-            await showChannelsPage(message, channels, 1);
+            tell(pages.map((p, i) => `صفحة ${i+1}/${pages.length}\n${p}`).join('\n\n---\n'));
+            return;
         }
 
-        if (/^!tv\s+\d+$/.test(message.content)) {
-            const page = parseInt(message.content.split(' ')[1], 10);
-            const channels = await fetchChannels();
-            if (!channels || Object.keys(channels).length === 0) {
-                return reply(message, '❌ لا توجد قنوات متاحة.');
-            }
-            await showChannelsPage(message, channels, page);
-        }
-
-        if (message.content.startsWith('!quality ')) {
-            const preset = message.content.split(' ')[1];
-            if (!QUALITY_PRESETS[preset]) {
-                return reply(message, '❌ الخيارات: lowend, low, medium, high');
-            }
+        if (trim.startsWith('!quality ')) {
+            const preset = trim.split(' ')[1];
+            if (!QUALITY_PRESETS[preset]) return tell('❌ الخيارات: lowend, low, medium, high');
             selectedQuality = QUALITY_PRESETS[preset];
-            await reply(message, `✅ تم ضبط الجودة إلى **${preset}** (${selectedQuality.width}x${selectedQuality.height}, ${selectedQuality.fps}fps)`);
+            return tell(`✅ الجودة: ${preset} (${selectedQuality.width}x${selectedQuality.height}, ${selectedQuality.fps}fps)`);
         }
 
-        if (message.content.startsWith('!play ')) {
-            if (isPlaying) {
-                return reply(message, '❌ يوجد بث قيد التشغيل حالياً. استعمل `!stop` أولاً.');
-            }
-
-            const channelKey = message.content.split(' ')[1];
+        if (trim.startsWith('!play ')) {
+            if (isPlaying) return tell('❌ يوجد بث. استعمل stop أولاً.');
+            const channelKey = trim.split(' ')[1];
             const channels = await fetchChannels();
-            if (!channels) {
-                return reply(message, '❌ تعذر جلب القنوات.');
-            }
-
+            if (!channels) return tell('❌ فشل جلب القنوات.');
             const channel = channels[channelKey];
-            if (!channel) {
-                return reply(message, `❌ القناة رقم ${channelKey} غير موجودة. اكتب \`!tv\` لعرض القنوات.`);
-            }
+            if (!channel) return tell(`❌ القناة ${channelKey} غير موجودة.`);
 
             abortController = new AbortController();
             currentChannelName = channel.name;
             isPlaying = true;
+            tell(`⏳ جاري تشغيل ${channel.name}...`);
 
-            console.log(`Joined voice, starting stream: ${channel.name}`);
+            await streamer.joinVoice(GUILD_ID, VOICE_ID);
+            console.log(`Joined voice: ${channel.name}`);
 
             if (ffmpegPath) {
-                console.log('Using FFmpeg to transcode stream');
-
-                try {
-                    if (fs.existsSync(ffmpegPath)) {
-                        fs.chmodSync(ffmpegPath, 0o777);
-                        console.log('FFmpeg permissions set to 0o777');
-                    }
-                } catch (e) {
-                    console.error('Could not change FFmpeg permissions:', e.message);
-                }
-
                 const { width, height, fps, bitrate, maxrate, bufsize } = selectedQuality;
                 ffmpegProcess = spawn(ffmpegPath, [
                     '-headers', 'User-Agent: VLC/3.0.20 LibVLC/3.0.20\r\n',
@@ -240,109 +214,104 @@ client.on('messageCreate', async (message) => {
                 ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
                 let ffmpegStderr = '';
-                ffmpegProcess.stderr.on('data', (chunk) => {
-                    ffmpegStderr += chunk.toString();
-                });
-                ffmpegProcess.stdout.on('error', (err) => {
-                    console.error('FFmpeg stdout error:', err.message);
-                });
-                ffmpegProcess.on('error', (err) => {
-                    console.error('FFmpeg process error:', err.message);
-                });
+                ffmpegProcess.stderr.on('data', (chunk) => ffmpegStderr += chunk.toString());
+                ffmpegProcess.stdout.on('error', () => {});
+                ffmpegProcess.on('error', (err) => console.error('FFmpeg error:', err.message));
                 ffmpegProcess.on('exit', (code, signal) => {
+                    console.log(`FFmpeg exit (code=${code}, signal=${signal})`);
                     if (code !== 0 && code !== null) {
-                        const lastLines = ffmpegStderr.split('\n').slice(-5).join('\n');
-                        console.error(`FFmpeg exit (code=${code}, signal=${signal}):\n${lastLines}`);
-                    } else {
-                        console.log(`FFmpeg exit (code=${code}, signal=${signal})`);
+                        console.error(ffmpegStderr.split('\n').slice(-5).join('\n'));
                     }
                     ffmpegProcess = null;
                 });
-
                 abortController.signal.addEventListener('abort', () => {
-                    if (ffmpegProcess) {
-                        ffmpegProcess.kill('SIGKILL');
-                        ffmpegProcess = null;
-                    }
+                    if (ffmpegProcess) { ffmpegProcess.kill('SIGKILL'); ffmpegProcess = null; }
                 });
 
-                const bufferStream = new PassThrough({ highWaterMark: 1024 * 1024 * 16 });
-                ffmpegProcess.stdout.pipe(bufferStream);
-                await playStream(bufferStream, streamer, {
-                    type: 'go-live',
-                    format: 'mpegts',
+                const buf = new PassThrough({ highWaterMark: 1024 * 1024 * 16 });
+                ffmpegProcess.stdout.pipe(buf);
+                await playStream(buf, streamer, {
+                    type: 'go-live', format: 'mpegts',
                     width: selectedQuality.width,
                     height: selectedQuality.height,
                     frameRate: selectedQuality.fps,
                 });
             } else {
-                console.log('FFmpeg not found, using direct mode');
                 const input = Readable.fromWeb(response.body);
                 await playStream(input, streamer, {
-                    type: 'go-live',
-                    format: 'mpegts',
+                    type: 'go-live', format: 'mpegts',
                     width: selectedQuality.width,
                     height: selectedQuality.height,
                     frameRate: selectedQuality.fps,
                 });
             }
-
             isPlaying = false;
-            await reply(message, `🎥 **${channel.name}** انتهى البث.`);
+            return tell(`✅ ${channel.name} انتهى البث.`);
         }
 
-        if (message.content === '!stop') {
-            await stopPlaying(message);
+        if (trim === '!stop') {
+            const name = currentChannelName || '';
+            if (ffmpegProcess) { ffmpegProcess.kill('SIGKILL'); ffmpegProcess = null; }
+            streamer.stopStream();
+            streamer.leaveVoice();
+            if (abortController) { abortController.abort(); abortController = null; }
+            currentChannelName = null;
+            isPlaying = false;
+            return tell(`🛑 تم إيقاف ${name}.`);
         }
 
-        if (message.content === '!txt') {
+        if (trim === '!txt') {
             const channels = await fetchChannels();
             if (!channels || Object.keys(channels).length === 0) return;
             const lines = Object.entries(channels).map(([num, ch]) => `${num}. ${ch.name}`);
-            const filePath = path.join(__dirname, 'channels.txt');
-            fs.writeFileSync(filePath, lines.join('\n'), 'utf8');
-            console.log(`✅ تم تصدير ${lines.length} قناة إلى ${filePath}`);
+            const fp = path.join(__dirname, 'channels.txt');
+            fs.writeFileSync(fp, lines.join('\n'), 'utf8');
+            return tell(`✅ ${lines.length} قناة → channels.txt`);
         }
 
-        if (message.content === '!help') {
-            const reply = [
-                '🤖 **الأوامر:**',
-                '',
-                '`!tv` - عرض قائمة القنوات',
-                '`!play <رقم>` - تشغيل قناة',
-                '`!stop` - إيقاف البث',
-                '`!quality <lowend|low|medium|high>` - ضبط الجودة',
-                '`!status` - حالة البث',
-                '`!txt` - تصدير القنوات إلى ملف',
-                '`!help` - المساعدة',
-            ].join('\n');
-            await reply(message, reply);
+        if (trim === '!status') {
+            const s = isPlaying ? `🎥 يشتغل: ${currentChannelName || 'قناة'}` : '🛑 متوقف';
+            const q = `📐 ${selectedQuality.width}x${selectedQuality.height} @ ${selectedQuality.fps}fps`;
+            return tell(`${s}\n${q}`);
         }
 
-        if (message.content === '!status') {
-            const status = isPlaying
-                ? `🎥 **يشتغل:** ${currentChannelName || 'قناة'}`
-                : '🛑 **متوقف**';
-            const quality = `📐 **الجودة:** ${selectedQuality.width}x${selectedQuality.height} @ ${selectedQuality.fps}fps`;
-            await reply(message, `${status}\n${quality}`);
+        if (trim === '!help') {
+            return tell([
+                'الأوامر:', '',
+                'play <رقم> - تشغيل قناة',
+                'stop - إيقاف البث',
+                'quality <lowend|low|medium|high>',
+                'tv - عرض القنوات',
+                'status - حالة البث',
+                'txt - تصدير القنوات',
+                'help - المساعدة',
+            ].join('\n'));
         }
     } catch (err) {
-        if (err.name === 'AbortError') {
-            isPlaying = false;
-            return;
+        if (err.name !== 'AbortError') {
+            console.error('Error:', err.message);
+            tell(`❌ ${err.message}`);
         }
-        console.error('Error:', err);
         isPlaying = false;
-        try {
-            await reply(message, `❌ خطأ: ${err.message || 'حدث خطأ غير متوقع'}`);
-        } catch (_) {}
-        if (ffmpegProcess) {
-            ffmpegProcess.kill('SIGKILL');
-            ffmpegProcess = null;
-        }
+        if (ffmpegProcess) { ffmpegProcess.kill('SIGKILL'); ffmpegProcess = null; }
         streamer.stopStream();
         streamer.leaveVoice();
     }
+}
+
+client.on('messageCreate', async (message) => {
+    if (message.author.bot) return;
+    if (!OWNER_IDS.includes(message.author.id)) return;
+    const tell = (t) => reply(message, t);
+    await runCommand(message.content, tell);
 });
+
+const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
+rl.on('line', (line) => {
+    const cmd = line.trim();
+    if (cmd) runCommand(cmd, (t) => console.log(t));
+    rl.prompt();
+});
+rl.prompt();
 
 client.login(TOKEN);
