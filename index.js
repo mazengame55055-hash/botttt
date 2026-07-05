@@ -26,6 +26,10 @@ const ffmpegPath = process.platform === 'win32' ? ffmpegStatic : '/usr/bin/ffmpe
 const client = new Client();
 const streamer = new Streamer(client);
 
+async function reply(msg, text) {
+    try { await msg.reply(text); } catch (e) { console.log('[reply blocked]', e.message); }
+}
+
 const TOKEN = process.env.TOKEN;
 const GUILD_ID = '1324034047613079574';
 const VOICE_ID = '1523292663636295811';
@@ -112,7 +116,7 @@ async function showChannelsPage(message, channels, page) {
         '🔹 `!play <رقم>` للتشغيل',
         '🔹 `!stop` للإيقاف',
     ].filter(Boolean).join('\n');
-    await message.reply(reply);
+    await reply(message, reply);
 }
 
 async function stopPlaying(message) {
@@ -129,7 +133,7 @@ async function stopPlaying(message) {
     }
     currentChannelName = null;
     isPlaying = false;
-    if (message) await message.reply(`🛑 تم إيقاف ${name ? `**${name}**` : 'البث'} ومغادرة الروم.`);
+    if (message) await reply(message, `🛑 تم إيقاف ${name ? `**${name}**` : 'البث'} ومغادرة الروم.`);
 }
 
 client.on('ready', async () => {
@@ -146,7 +150,7 @@ client.on('messageCreate', async (message) => {
         if (message.content === '!tv') {
             const channels = await fetchChannels();
             if (!channels || Object.keys(channels).length === 0) {
-                return message.reply('❌ لا توجد قنوات متاحة.');
+                return reply(message, '❌ لا توجد قنوات متاحة.');
             }
             await showChannelsPage(message, channels, 1);
         }
@@ -155,7 +159,7 @@ client.on('messageCreate', async (message) => {
             const page = parseInt(message.content.split(' ')[1], 10);
             const channels = await fetchChannels();
             if (!channels || Object.keys(channels).length === 0) {
-                return message.reply('❌ لا توجد قنوات متاحة.');
+                return reply(message, '❌ لا توجد قنوات متاحة.');
             }
             await showChannelsPage(message, channels, page);
         }
@@ -163,33 +167,33 @@ client.on('messageCreate', async (message) => {
         if (message.content.startsWith('!quality ')) {
             const preset = message.content.split(' ')[1];
             if (!QUALITY_PRESETS[preset]) {
-                return message.reply('❌ الخيارات: low, medium, high');
+                return reply(message, '❌ الخيارات: low, medium, high');
             }
             selectedQuality = QUALITY_PRESETS[preset];
-            await message.reply(`✅ تم ضبط الجودة إلى **${preset}** (${selectedQuality.width}x${selectedQuality.height}, ${selectedQuality.fps}fps)`);
+            await reply(message, `✅ تم ضبط الجودة إلى **${preset}** (${selectedQuality.width}x${selectedQuality.height}, ${selectedQuality.fps}fps)`);
         }
 
         if (message.content.startsWith('!play ')) {
             if (isPlaying) {
-                return message.reply('❌ يوجد بث قيد التشغيل حالياً. استعمل `!stop` أولاً.');
+                return reply(message, '❌ يوجد بث قيد التشغيل حالياً. استعمل `!stop` أولاً.');
             }
 
             const channelKey = message.content.split(' ')[1];
             const channels = await fetchChannels();
             if (!channels) {
-                return message.reply('❌ تعذر جلب القنوات.');
+                return reply(message, '❌ تعذر جلب القنوات.');
             }
 
             const channel = channels[channelKey];
             if (!channel) {
-                return message.reply(`❌ القناة رقم ${channelKey} غير موجودة. اكتب \`!tv\` لعرض القنوات.`);
+                return reply(message, `❌ القناة رقم ${channelKey} غير موجودة. اكتب \`!tv\` لعرض القنوات.`);
             }
 
             abortController = new AbortController();
             currentChannelName = channel.name;
             isPlaying = true;
 
-            await message.reply(`⏳ جاري تشغيل **${channel.name}**...`);
+            await reply(message, `⏳ جاري تشغيل **${channel.name}**...`);
 
             await streamer.joinVoice(GUILD_ID, VOICE_ID);
             console.log(`Joined voice, starting stream: ${channel.name}`);
@@ -292,7 +296,7 @@ client.on('messageCreate', async (message) => {
             }
 
             isPlaying = false;
-            await message.reply(`🎥 **${channel.name}** انتهى البث.`);
+            await reply(message, `🎥 **${channel.name}** انتهى البث.`);
         }
 
         if (message.content === '!stop') {
@@ -310,7 +314,7 @@ client.on('messageCreate', async (message) => {
                 '`!status` - حالة البث',
                 '`!help` - المساعدة',
             ].join('\n');
-            await message.reply(reply);
+            await reply(message, reply);
         }
 
         if (message.content === '!status') {
@@ -318,7 +322,7 @@ client.on('messageCreate', async (message) => {
                 ? `🎥 **يشتغل:** ${currentChannelName || 'قناة'}`
                 : '🛑 **متوقف**';
             const quality = `📐 **الجودة:** ${selectedQuality.width}x${selectedQuality.height} @ ${selectedQuality.fps}fps`;
-            await message.reply(`${status}\n${quality}`);
+            await reply(message, `${status}\n${quality}`);
         }
     } catch (err) {
         if (err.name === 'AbortError') {
@@ -328,7 +332,7 @@ client.on('messageCreate', async (message) => {
         console.error('Error:', err);
         isPlaying = false;
         try {
-            await message.reply(`❌ خطأ: ${err.message || 'حدث خطأ غير متوقع'}`);
+            await reply(message, `❌ خطأ: ${err.message || 'حدث خطأ غير متوقع'}`);
         } catch (_) {}
         if (ffmpegProcess) {
             ffmpegProcess.kill('SIGKILL');
