@@ -26,7 +26,7 @@ const ffmpegPath = process.platform === 'win32' ? ffmpegStatic : '/usr/bin/ffmpe
 const client = new Client();
 const streamer = new Streamer(client);
 
-const TOKEN = process.env.TOKEN || "ODUyNzI2ODk5NzcxODM0Mzk4.G-dGWe.ulbcdwMtVE-NO4Gmraxl570r4AXKCQwJ8InERs";
+const TOKEN = process.env.TOKEN;
 const GUILD_ID = '1483113341160259806';
 const VOICE_ID = '1483120294917963891';
 const OWNER_ID = '820408813790167041';
@@ -44,9 +44,10 @@ const QUALITY_PRESETS = {
     low: { width: 640, height: 360, fps: 15 },
     medium: { width: 854, height: 480, fps: 20 },
     high: { width: 1280, height: 720, fps: 25 },
+    hd: { width: 1920, height: 1080, fps: 30 },
 };
 
-let selectedQuality = QUALITY_PRESETS.medium;
+let selectedQuality = QUALITY_PRESETS.hd;
 let currentChannelName = null;
 let abortController = null;
 let channelsCache = null;
@@ -203,6 +204,7 @@ client.on('messageCreate', async (message) => {
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
+            response.body.cancel();
 
             if (ffmpegPath) {
                 console.log('Using FFmpeg to transcode stream');
@@ -216,23 +218,28 @@ client.on('messageCreate', async (message) => {
                     console.error('Could not change FFmpeg permissions:', e.message);
                 }
 
+                const { width, height, fps } = selectedQuality;
                 ffmpegProcess = spawn(ffmpegPath, [
                     '-reconnect', '1',
                     '-reconnect_streamed', '1',
                     '-reconnect_delay_max', '5',
                     '-analyzeduration', '500000',
                     '-probesize', '500000',
-                    '-re',
                     '-i', channel.url,
-                    '-preset', 'ultrafast',
+                    '-preset', 'medium',
                     '-c:v', 'libx264',
                     '-pix_fmt', 'yuv420p',
-                    '-b:v', '1000k',
+                    '-vf', `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`,
+                    '-b:v', '4000k',
+                    '-maxrate', '6000k',
+                    '-bufsize', '8000k',
+                    '-threads', '4',
                     '-c:a', 'libopus',
                     '-ac', '2',
-                    '-b:a', '64k',
+                    '-b:a', '128k',
                     '-max_muxing_queue_size', '1024',
                     '-f', 'mpegts',
+                    '-mpegts_flags', '+resend_headers',
                     'pipe:1',
                 ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
